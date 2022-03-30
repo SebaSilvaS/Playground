@@ -9,17 +9,24 @@ ppm_to_mz = function(mz, noise){
   return(ppm)
 }
 
-Dulce_fetch = function(data, cwp=NULL, pdp=NULL, 
-                 return_everything=T){
+Dulce_fetch = function(data, cwp=NULL, pdp=NULL, return_everything=F){
+  
+  # If no param objects defined, default is used.
+  if (is.null(cwp)){cwp = CentWaveParam()}
+  else if (!is.null(cwp) & class(cwp)!="CentWaveParam"){
+    stop("Dulce error: 'cwp' is not from 'CentWaveParam'. Check for ?CentWaveParam or set it as NULL to use default arguments.")}
+  
+  if (is.null(pdp)){pdp = PeakDensityParam(sampleGroups=rep("Ungrouped", nrow(data)))}
+  else if (!is.null(pdp) & class(pdp)!="PeakDensityParam"){
+    stop("Dulce error: 'pdp' is not from 'PeakDensityParam'. Check for ?PeakDensityParam or set it as NULL to use default arguments.")}
   
   # Defining a default "Ungrouped" category if no grouping is defined.
-  if (is.null(sampleGroups)){
-    sampleGroups = rep("Ungrouped", nrow(data))
-  }
+  if (length(pdp@sampleGroups)==0){
+    pdp@sampleGroups = rep("Ungrouped", nrow(data))
+    message("Dulce warning: No sample groups were defined. One group under the name of 'Ungrouped' will be created.")}
   
   # Fetch 
   processed_data = findChromPeaks(data, param=cwp) %>% groupChromPeaks(param=pdp)
-  
   message("Peaks picked and grouped!")
   
   if (return_everything){
@@ -32,15 +39,6 @@ Dulce_fetch = function(data, cwp=NULL, pdp=NULL,
   }
   return(processed_data)
 }
-
-
-foo = function(x, list){
-  x = x+1
-  
-  
-}
-
-
 Dulce_toCAMERA = function(data, names=NULL, classes="Unclassified"){
   
   if (class(data)!="XCMSnExp"){stop("Dulce error: 'data' object is not from 'XCMSnExp' class.")}
@@ -56,9 +54,13 @@ Dulce_toCAMERA = function(data, names=NULL, classes="Unclassified"){
   return(data_converted)
 }
 
-Dulce_annotate = function(data, isotopes=T, adducts=T, 
+Dulce_isotAddu = function(data, isotopes=T, adducts=T, 
                           perfwhm=0.5, mzabs=0.01, cor_eic_th=0.75,
                           polarity=NULL){
+  
+  if (is.null(polarity)){
+    stop("Dulce error: NULL polarity? Check it twice.")
+  }
   
   data = xsAnnotate(data) %>% groupFWHM(perfwhm = perfwhm)
   
@@ -77,12 +79,9 @@ Dulce_annotate = function(data, isotopes=T, adducts=T,
 
 Dulce_trimIsotopes = function(data, rtmin=0, rtmax=Inf){
   
-  library(data.table)
   if (class(data)!="xsAnnotate"){stop("Dulce error: 'data' object is not from 'xsAnnotate' class.")}
   
-  data = getPeaklist(data)
-  
-  data = data %>% filter(between(rt, rtmin, rtmax))
+  data = getPeaklist(data) %>% filter(between(rt, rtmin, rtmax))
   
   data_isotopes = data %>% filter(isotopes!="") %>% 
     mutate(isotope_group=sub(x=isotopes, pat="\\[M.*", rep="")) %>% 
@@ -98,10 +97,16 @@ Dulce_predict = function(data, dp1=1, dp2=6, ESI_mode="neg",
                          scan_range1=0, scan_range2=2000, 
                          pent_option=1, label="none",
                          modifications=c("deoxy", "unsaturated", "sulphate"),
-                         noise=0.001, noise_unit="mz"){
+                         ppm=NULL, mzabs=NULL){
   
   if (!all(c("mzmin","mzmax") %in% colnames(data))){
     stop("Dulce error: check if 'mzmin' and 'mzmax' are columns in the 'data' object. They are needed to overlap the predictions.")
+  }
+  
+  if (is.null(ppm) & is.null(mzabs)){stop("Dulce error: 'ppm' and 'mzabs' have NULL values. Please specify one.")}
+  if ((!is.null(ppm) & !is.null(mzabs))){
+    message("Dulce warning: 'ppm' and 'mzabs' were specified (it is one or the other, not both). Using only 'ppm'")
+    mzabs = NULL
   }
   
   predicted = predictGlycans(dp1=dp1, dp2=dp2, ESI_mode=ESI_mode, 
@@ -111,12 +116,12 @@ Dulce_predict = function(data, dp1=1, dp2=6, ESI_mode="neg",
     pivot_longer(-c(name, dp, mass, formula), names_to = "ion", values_to = "mz") %>% 
     drop_na()
   
-  if (noise_unit=="mz"){
-    predicted = predicted %>% mutate(mzmin=mz-noise,
-                                     mzmax=mz+noise)
-  } else if (noise_unit=="ppm"){
-    predicted = predicted %>% mutate(mzmin=mz-ppm_to_mz(mz, noise),
-                                     mzmax=mz+ppm_to_mz(mz, noise))
+  if (!is.null(mzabs)){
+    predicted = predicted %>% mutate(mzmin=mz-mzabs,
+                                     mzmax=mz+mzabs)
+  } else if (!is.null(ppm)){
+    predicted = predicted %>% mutate(mzmin=mz-ppm_to_mz(mz, ppm),
+                                     mzmax=mz+ppm_to_mz(mz, ppm))
   } else {
     stop("Dulce error: noise_unit value is not recognized. Please choose between 'mz' and 'ppm'")
   }
@@ -129,22 +134,18 @@ Dulce_predict = function(data, dp1=1, dp2=6, ESI_mode="neg",
   return(predicted)
 }
 
-Dulce_doAll = function(data,
-                       ppm=10, peakwidth=c(5,50), snthresh=10, prefilter=c(3,1000), 
-                       sampleGroups=NULL, fetch_noise=5000, binSize=0.01, bw=5, minFraction=0.5,
+Dulce_doAll = function(data, cwp=NULL, pdp=NULL,
                        names=NULL, classes="Unclassified",
-                       isotopes=T, adducts=T, perfwhm=0.5, mzabs=0.01, 
+                       isotopes=T, adducts=T, perfwhm=0.5, mzabs_isotAdd=0.01, 
                        cor_eic_th=0.75, polarity=NULL,
                        rtmin=0, rtmax=Inf,
                        dp1=1, dp2=6, ESI_mode="neg", scan_range1=0, scan_range2=2000, 
                        pent_option=1, label="none",
                        modifications=c("deoxy", "unsaturated", "sulphate"),
-                       predict_noise=0.001, noise_unit="mz",
+                       ppm=NULL, mzabs=NULL,
                        return_everything=F){
   
-  data_fetched = Dulce_fetch(data, ppm=ppm, peakwidth=peakwidth, snthresh=snthresh, prefilter=prefilter, 
-                     sampleGroups=sampleGroups, noise=fetch_noise, binSize=binSize, bw=bw, 
-                     minFraction=minFraction, return_everything=return_everything)
+  data_fetched = Dulce_fetch(data, cwp=cwp, pdp=pdp, return_everything=return_everything)
   
   if (return_everything){
     data_peaks = data_fetched$peaks
@@ -153,10 +154,14 @@ Dulce_doAll = function(data,
   }
   
   data_converted = Dulce_toCAMERA(data_fetched, names=names, classes=classes)
-  data_annotated = Dulce_annotate(data_converted, isotopes=isotopes, adducts=adducts, 
-                                  perfwhm=perfwhm, mzabs=mzabs, cor_eic_th=cor_eic_th, polarity=polarity)
+  data_annotated = Dulce_isotAddu(data_converted, isotopes=isotopes, adducts=adducts, 
+                                  perfwhm=perfwhm, mzabs=mzabs_isotAdd, cor_eic_th=cor_eic_th, polarity=polarity)
   data_trimmed = Dulce_trimIsotopes(data_annotated, rtmin=rtmin, rtmax=rtmax)
-  data_predicted = Dulce_predict(data_trimmed)
+  data_predicted = Dulce_predict(data_trimmed, dp1=dp1, dp2=dp2, ESI_mode=ESI_mode, 
+                                 scan_range1=scan_range1, scan_range2=scan_range2, 
+                                 pent_option=pent_option, label=label,
+                                 modifications=modifications,
+                                 ppm=ppm, mzabs=mzabs)
   
   if (return_everything){
     return(list(data_fetched=data_fetched, 
@@ -173,20 +178,31 @@ Dulce_doAll = function(data,
 
 
 # Sample code -------------------------------------------------------------
-file.paths = dir(path="mzML_example2", all.files=F, full.names=T)
+file.paths = dir(path="mzML_example3", all.files=F, full.names=T)
 pheno.data = data.frame(name=basename(file.paths) %>% 
                           gsub(pat="MS31_20220203_|_\\d{2}.mzML|_100xdilute", 
                                rep=""),
-                        sampletype=basename(file.paths) %>% 
-                          gsub(pat=".*fulldigest.*",
-                               rep="digest") %>% 
-                          gsub(pat=".*solventblank.*",
-                               rep="solvent_blank"))
-
-
+                        sampletype1=basename(file.paths) %>% 
+                          gsub(pat=".*blank.*",
+                               rep="blank") %>% 
+                          gsub(pat=".*lam.*",
+                               rep="laminarin") %>% 
+                          gsub(pat=".*yeastmannan.*",
+                               rep="yeastmannan"),
+                        sampletype2=basename(file.paths) %>% 
+                          gsub(pat=".*blank.*",
+                               rep="blank") %>% 
+                          gsub(pat=".*lam_omix.*|.*gh76.*",
+                               rep="positive control") %>% 
+                          gsub(pat=".*fitdog.*",
+                               rep="sample"),
+                        rep=basename(file.paths) %>% 
+                          gsub(pat=".*rep2.*|.*-2-.*",
+                               rep="B") %>% 
+                          gsub(pat=".*rep1.*|.*-1-.*",
+                               rep="A"))
 pheno.data = pheno.data[c(1,2),]
 file.paths = file.paths[c(1,2)]
-
 data = readMSData(files=file.paths, 
                   pdata=new("NAnnotatedDataFrame", pheno.data),
                   mode="onDisk")
@@ -196,24 +212,7 @@ data = data[data@featureData@data$msLevel==1]
 
 register(SerialParam())
 
-lista = Dulce_fetch(data, sampleGroups=data$sampletype, minFraction=0.4)
-
-data_converted = Dulce_toCAMERA(list$data)
-
-data_annotated = Dulce_annotate(data_converted, polarity="negative")
-
-data_formargot = getPeaklist(data_annotated)
-
-data_trimmed = Dulce_trimIsotopes(data_annotated, rtmin=300, rtmax=2500)
-
-
-data_predicted = Dulce_predict(data_trimmed)
-
-
-data_predicted = Dulce_doAll(data)
-
-
-a = Dulce_fetch(data)
+data_processed = Dulce_doAll(data, polarity="negative", ppm=10)
 
 
 
