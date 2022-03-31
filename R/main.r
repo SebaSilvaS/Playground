@@ -9,16 +9,35 @@ ppm_to_mz = function(mz, noise){
   return(ppm)
 }
 
+predictGlycansParams = setClass("predictGlycansParams",
+                                slots=list(dp1="numeric", 
+                                           dp2="numeric", 
+                                           ESI_mode="character", 
+                                           scan_range1="numeric", 
+                                           scan_range2="numeric", 
+                                           pent_option="numeric", 
+                                           label="character",
+                                           modifications="character"),
+                                prototype=prototype(dp1=1, 
+                                                    dp2=6, 
+                                                    ESI_mode="neg", 
+                                                    scan_range1=0, 
+                                                    scan_range2=2000, 
+                                                    pent_option=1, 
+                                                    label="none",
+                                                    modifications=c("deoxy", "unsaturated", "sulphate")))
+
+
 Dulce_fetch = function(data, cwp=NULL, pdp=NULL, return_everything=F){
   
   # If no param objects defined, default is used.
   if (is.null(cwp)){cwp = CentWaveParam()}
   else if (!is.null(cwp) & class(cwp)!="CentWaveParam"){
-    stop("Dulce error: 'cwp' is not from 'CentWaveParam'. Check for ?CentWaveParam or set it as NULL to use default arguments.")}
+    stop("Dulce error: 'cwp' is not an 'CentWaveParam' object. Check for ?CentWaveParam or set it as NULL to use default arguments.")}
   
   if (is.null(pdp)){pdp = PeakDensityParam(sampleGroups=rep("Ungrouped", nrow(data)))}
   else if (!is.null(pdp) & class(pdp)!="PeakDensityParam"){
-    stop("Dulce error: 'pdp' is not from 'PeakDensityParam'. Check for ?PeakDensityParam or set it as NULL to use default arguments.")}
+    stop("Dulce error: 'pdp' is not an 'PeakDensityParam' object. Check for ?PeakDensityParam or set it as NULL to use default arguments.")}
   
   # Defining a default "Ungrouped" category if no grouping is defined.
   if (length(pdp@sampleGroups)==0){
@@ -39,22 +58,22 @@ Dulce_fetch = function(data, cwp=NULL, pdp=NULL, return_everything=F){
   }
   return(processed_data)
 }
+
 Dulce_toCAMERA = function(data, names=NULL, classes="Unclassified"){
   
   if (class(data)!="XCMSnExp"){stop("Dulce error: 'data' object is not from 'XCMSnExp' class.")}
-  data_converted = as(data, "xcmsSet")
+  suppressMessages(data_converted = as(data, "xcmsSet"))
   
   if (is.null(names)){
     names = sprintf("sample_%03d", 1:nrow(data))
   }
   sampnames(data_converted) = names
   sampclass(data_converted) = classes
-  
-  message("Dulce note: Do not worry, 'sampclass' and 'sampnames' have already been set.")
+
   return(data_converted)
 }
 
-Dulce_isotAddu = function(data, isotopes=T, adducts=T, 
+Dulce_find = function(data, isotopes=T, adducts=T, 
                           perfwhm=0.5, mzabs=0.01, cor_eic_th=0.75,
                           polarity=NULL){
   
@@ -93,12 +112,9 @@ Dulce_trimIsotopes = function(data, rtmin=0, rtmax=Inf){
     dplyr::select(-isotope_group)
 }
 
-Dulce_predict = function(data, dp1=1, dp2=6, ESI_mode="neg", 
-                         scan_range1=0, scan_range2=2000, 
-                         pent_option=1, label="none",
-                         modifications=c("deoxy", "unsaturated", "sulphate"),
-                         ppm=NULL, mzabs=NULL){
-  
+Dulce_annotate = function(data, pgp=NULL,
+                           ppm=NULL, mzabs=NULL){
+    
   if (!all(c("mzmin","mzmax") %in% colnames(data))){
     stop("Dulce error: check if 'mzmin' and 'mzmax' are columns in the 'data' object. They are needed to overlap the predictions.")
   }
@@ -108,6 +124,11 @@ Dulce_predict = function(data, dp1=1, dp2=6, ESI_mode="neg",
     message("Dulce warning: 'ppm' and 'mzabs' were specified (it is one or the other, not both). Using only 'ppm'")
     mzabs = NULL
   }
+  
+  if (is.null(pgp)){pgp = predictGlycansParams()}
+  else if (!is.null(pgp) & class(pgp)!="predictGlycansParams"){
+    stop("Dulce error: 'cwp' is not an 'predictGlycansParams' object. Check for ?predictGlycansParams or set it as NULL to use default arguments.")}
+  
   
   predicted = predictGlycans(dp1=dp1, dp2=dp2, ESI_mode=ESI_mode, 
                              scan_range1=scan_range1, scan_range2=scan_range2,
@@ -154,10 +175,10 @@ Dulce_doAll = function(data, cwp=NULL, pdp=NULL,
   }
   
   data_converted = Dulce_toCAMERA(data_fetched, names=names, classes=classes)
-  data_annotated = Dulce_isotAddu(data_converted, isotopes=isotopes, adducts=adducts, 
+  data_annotated = Dulce_find(data_converted, isotopes=isotopes, adducts=adducts, 
                                   perfwhm=perfwhm, mzabs=mzabs_isotAdd, cor_eic_th=cor_eic_th, polarity=polarity)
   data_trimmed = Dulce_trimIsotopes(data_annotated, rtmin=rtmin, rtmax=rtmax)
-  data_predicted = Dulce_predict(data_trimmed, dp1=dp1, dp2=dp2, ESI_mode=ESI_mode, 
+  data_predicted = Dulce_annotate(data_trimmed, dp1=dp1, dp2=dp2, ESI_mode=ESI_mode, 
                                  scan_range1=scan_range1, scan_range2=scan_range2, 
                                  pent_option=pent_option, label=label,
                                  modifications=modifications,
@@ -175,6 +196,7 @@ Dulce_doAll = function(data, cwp=NULL, pdp=NULL,
   
   return(data_predicted)
 }
+
 
 
 # Sample code -------------------------------------------------------------
@@ -211,6 +233,13 @@ data = readMSData(files=file.paths,
 data = data[data@featureData@data$msLevel==1]
 
 register(SerialParam())
+
+pgp = predictGlycansParams(dp1=1, dp2=6, ESI_mode="neg", scan_range1=0, scan_range2=2000, 
+                          pent_option=1, label="none",
+                          modifications=c("deoxy", "unsaturated", "sulphate"))
+    
+
+
 
 data_processed = Dulce_doAll(data, polarity="negative", ppm=10)
 
